@@ -3,11 +3,6 @@
 """Use the amazing work of https://github.com/yaqwsx/jlcparts and convert their database into something we can conveniently use for this plugin.
 
 This replaces the old .csv based database creation that JLCPCB no longer supports.
-
-Before this script can run, the cache.sqlite3 file has to be
-present in db_working folder. Download and reassemble it like
-jlcparts does it in their build pipeline:
-https://github.com/yaqwsx/jlcparts/blob/1a07e1ff42fef2d35419cfb9ba47df090037cc7b/.github/workflows/update_components.yaml#L45-L50
 """
 
 import copy
@@ -16,7 +11,11 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import subprocess
+import sys
+import time
 from typing import Optional
+import urllib.request
 import zipfile
 from zipfile import ZipFile
 
@@ -676,6 +675,33 @@ def test_price_duplicate_price_filter():
     assert unique[len(unique) - 1].max_quantity is None
 
 
+last_download_progress_print_time = 0
+
+
+def download_progress_hook(count, block_size, total_size):
+    """Display the download status during the download process."""
+    global last_download_progress_print_time  # noqa: PLW0603
+
+    downloaded = count * block_size
+
+    # print at most twice a second
+    max_time_between_prints_seconds = 0.5
+
+    now = time.monotonic()
+    if (
+        now - last_download_progress_print_time >= max_time_between_prints_seconds
+        or count * block_size >= total_size
+    ):
+        percent = int(downloaded * 100 / total_size) if total_size > 0 else 0
+
+        sys.stdout.write(f"\rDownloading: {percent}% ({downloaded}/{total_size} bytes)")
+        sys.stdout.flush()
+        last_download_progress_print_time = now
+
+    if downloaded >= total_size:
+        print()  # Finish line
+
+
 @click.command()
 @click.option(
     "--skip-cleanup",
@@ -685,19 +711,87 @@ def test_price_duplicate_price_filter():
     help="Disable cleanup, intermediate database files will not be deleted",
 )
 @click.option(
+    "--fetch-parts-db",
+    is_flag=True,
+    show_default=True,
+    default=False,
+    help="Fetch the upstream parts db from yaqwsx",
+)
+@click.option(
     "--skip-generate",
     is_flag=True,
     show_default=True,
     default=False,
     help="Skip the DB generation phase",
 )
-def main(skip_cleanup: bool, skip_generate: bool):
+def main(skip_cleanup: bool, fetch_parts_db: bool, skip_generate: bool):
     """Perform the database steps."""
 
     output_directory = "db_working"
     if not os.path.exists(output_directory):
         os.mkdir(output_directory)
     os.chdir(output_directory)
+
+    if fetch_parts_db:
+        base_url = "https://yaqwsx.github.io/jlcparts/data"
+        first_file = "cache.zip"
+
+        print(f"Fetching upstream parts database from {base_url}")
+
+        print(f"Fetching first file {first_file}")
+        urllib.request.urlretrieve(
+            f"{base_url}/{first_file}", first_file, reporthook=download_progress_hook
+        )
+
+        seven_zip_tool = "7z"
+
+        # discover which tool is available
+        # it can be 7z (Linux) or 7zz (brew on OSX, see https://github.com/orgs/Homebrew/discussions/6072)
+        test_7z_command = f"{seven_zip_tool} i"
+        try:
+            # can we find 7zz?
+            result = subprocess.run(  # noqa: S602
+                test_7z_command, shell=True, check=True
+            )
+        except:
+            # fall back to brew on osx name
+            seven_zip_tool = "7zz"
+            print(f"Falling back to {seven_zip_tool}")
+
+        command = f'{seven_zip_tool} l {first_file} | grep "Volume Index =" | grep -Eoh "[0-9]+"'
+        result = subprocess.run(  # noqa: S602
+            command, shell=True, capture_output=True, text=True, check=False
+        )
+        try:
+            file_count = int(result.stdout)
+            print(f"File count {file_count}")
+        except:
+            print(f"Unable to retrieve file count from '{result.stdout}'")
+            sys.exit(1)
+
+        # retrieve each file
+        # NOTE: Files start with '1'
+        for part in range(1, file_count + 1):
+            part_file = f"cache.z{part:02d}"
+            print(f"\nGetting file {part_file}")
+            urllib.request.urlretrieve(
+                f"{base_url}/{part_file}",
+                part_file,
+                reporthook=download_progress_hook,
+            )
+
+        # extract the database file
+        print(f"\nExtracting {first_file}")
+        # pass '-y' that indicates yes to all questions, such as overwriting
+        command = f"{seven_zip_tool} x -y {first_file}"
+        result = subprocess.run(  # noqa: S602
+            command, shell=True, capture_output=True, text=True, check=False
+        )
+
+        # remove the intermediate individual zip files now that the database file
+        # has been extracted
+        for file in Path(".").glob("cache.z*"):
+            file.unlink()
 
     if not skip_generate:
         # sqlite database
