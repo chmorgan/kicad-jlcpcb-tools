@@ -6,7 +6,7 @@ import logging
 import os
 import os.path
 import re
-from typing import Optional
+from typing import Optional, cast
 
 from pcbnew import GetBuildVersion  # pylint: disable=import-error
 
@@ -93,6 +93,25 @@ class SchematicExport:
             return None
         return states.pop()
 
+    def _resolved_lcsc(
+        self, refs: set[str], store_parts: list[dict[str, object]]
+    ) -> Optional[str]:  # noqa: UP045
+        """Return a shared LCSC value, or None when it is unsafe."""
+        matched = {
+            part["reference"]: part["lcsc"]
+            for part in store_parts
+            if part["reference"] in refs
+        }
+        if not matched or set(matched) != refs:
+            return None
+        values = set(matched.values())
+        if len(values) != 1:
+            self.logger.warning(
+                "Not updating LCSC for %s; instances disagree", sorted(refs)
+            )
+            return None
+        return cast(str, values.pop())
+
     def _symbol_instances6(self) -> dict[str, set[str]]:
         """Read KiCad 6's project-level symbol instance references by UUID."""
         project_name = self._project_name
@@ -124,7 +143,7 @@ class SchematicExport:
             return refs
 
         self.logger.warning(
-            "Unable to find KiCad 6 symbol instances; BOM states will not be updated"
+            "Unable to find KiCad 6 symbol instances; BOM and LCSC states will not be updated"
         )
         return {}
 
@@ -133,8 +152,8 @@ class SchematicExport:
         lines: list[str],
         store_parts: list[dict[str, object]],
         instance_refs: Optional[dict[str, set[str]]] = None,  # noqa: UP045
-    ) -> dict[int, str]:
-        """Return in_bom line updates that are safe for every symbol instance."""
+    ) -> tuple[dict[int, str], dict[int, set[str]]]:
+        """Return safe in_bom updates and resolved refs keyed by source line."""
         symbols = []
         symbol = None
         symbol_end = ""
@@ -149,6 +168,7 @@ class SchematicExport:
             if symbol_start:
                 symbol = {
                     "bom_line": None,
+                    "reference_line": None,
                     "uuid": "",
                     "reference": "",
                     "instances": None,
@@ -169,6 +189,7 @@ class SchematicExport:
                 symbol["uuid"] = match.group(1)
             if match := self._REFERENCE_RX.search(in_line):
                 symbol["reference"] = match.group(1)
+                symbol["reference_line"] = index
             if instance_refs is None:
                 if "(instances" in in_line:
                     symbol["instances"] = {}
@@ -190,6 +211,7 @@ class SchematicExport:
             project_name = self._project_name
 
         updates = {}
+        refs_by_line = {}
         for symbol in symbols:
             if instance_refs is not None:
                 refs = instance_refs.get(symbol["uuid"], set())
@@ -212,7 +234,9 @@ class SchematicExport:
             bom = self._resolved_bom(refs, store_parts)
             if bom is not None and symbol["bom_line"] is not None:
                 updates[symbol["bom_line"]] = "no" if bom else "yes"
-        return updates
+            if symbol["reference_line"] is not None:
+                refs_by_line[symbol["reference_line"]] = refs
+        return updates, refs_by_line
 
     def load_schematic(self, paths: list[str]) -> None:
         """Load schematic file."""
@@ -253,9 +277,10 @@ class SchematicExport:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
 
-        for index, desired in self._bom_updates(
+        bom_updates, refs_by_line = self._bom_updates(
             lines, store_parts, instance_refs=instance_refs
-        ).items():
+        )
+        for index, desired in bom_updates.items():
             lines[index] = self._IN_BOM_RX.sub(rf"\1(in_bom {desired})", lines[index])
 
         if os.path.exists(path + "_old"):
@@ -263,7 +288,7 @@ class SchematicExport:
         os.rename(path, path + "_old")
         partSection = False
 
-        for line in lines:
+        for index, line in enumerate(lines):
             inLine = line.rstrip()
             outLine = inLine
             if "(symbol (lib_id" in inLine:  # skip library section
@@ -287,10 +312,12 @@ class SchematicExport:
                 if key == "Reference":
                     lastLoc = m.group(4)
                     lastRef = value
-                    for part in store_parts:
-                        if value == part["reference"]:
-                            newLcsc = part["lcsc"]
-                            break
+                    newLcsc = ""
+                    lcsc = self._resolved_lcsc(
+                        refs_by_line.get(index, set()), store_parts
+                    )
+                    if lcsc is not None:
+                        newLcsc = lcsc
             # if we hit the pin section without finding a LCSC property, add it
             m = pinRx.search(inLine)
             if m:
@@ -334,7 +361,8 @@ class SchematicExport:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
 
-        for index, desired in self._bom_updates(lines, store_parts).items():
+        bom_updates, refs_by_line = self._bom_updates(lines, store_parts)
+        for index, desired in bom_updates.items():
             lines[index] = self._IN_BOM_RX.sub(rf"\1(in_bom {desired})", lines[index])
 
         if os.path.exists(path + "_old"):
@@ -342,7 +370,7 @@ class SchematicExport:
         os.rename(path, path + "_old")
         partSection = False
 
-        for line in lines:
+        for index, line in enumerate(lines):
             inLine = line.rstrip()
             outLine = inLine
             if "(symbol (lib_id" in inLine:  # skip library section
@@ -365,10 +393,12 @@ class SchematicExport:
                 if key == "Reference":
                     lastLoc = m.group(3)
                     lastRef = value
-                    for part in store_parts:
-                        if value == part["reference"]:
-                            newLcsc = part["lcsc"]
-                            break
+                    newLcsc = ""
+                    lcsc = self._resolved_lcsc(
+                        refs_by_line.get(index, set()), store_parts
+                    )
+                    if lcsc is not None:
+                        newLcsc = lcsc
             # if we hit the pin section without finding a LCSC property, add it
             m = pinRx.search(inLine)
             if m:
@@ -410,7 +440,8 @@ class SchematicExport:
         with open(path, encoding="utf-8") as f:
             lines = f.readlines()
 
-        for index, desired in self._bom_updates(lines, store_parts).items():
+        bom_updates, refs_by_line = self._bom_updates(lines, store_parts)
+        for index, desired in bom_updates.items():
             lines[index] = self._IN_BOM_RX.sub(rf"\1(in_bom {desired})", lines[index])
 
         partSection = False
@@ -448,10 +479,10 @@ class SchematicExport:
                     value = m.group(2)
                     # self.logger.info("value %s", value)
                     lastRef = value
-                    for part in store_parts:
-                        if value == part["reference"]:
-                            newLcsc = part["lcsc"]
-                            break
+                    newLcsc = ""
+                    lcsc = self._resolved_lcsc(refs_by_line.get(i, set()), store_parts)
+                    if lcsc is not None:
+                        newLcsc = lcsc
                 if key == "Sheetfile":
                     file_name = m.group(2)
                     if file_name not in files_seen:
