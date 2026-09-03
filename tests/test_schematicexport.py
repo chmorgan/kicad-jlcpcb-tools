@@ -234,12 +234,15 @@ def _run_export(
 
 
 CASES = [
-    pytest.param("yes", ("RV2",), [_part("RV2", "NEW", True)], "no", id="single"),
+    pytest.param(
+        "yes", ("RV2",), [_part("RV2", "NEW", True)], "no", "NEW", id="single"
+    ),
     pytest.param(
         "yes",
         ("RV2", "RV6"),
         [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", True)],
         "no",
+        "OLD",
         id="reused-agree",
     ),
     pytest.param(
@@ -247,6 +250,7 @@ CASES = [
         ("RV2", "RV6"),
         [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", False)],
         "yes",
+        "OLD",
         id="reused-disagree",
     ),
     pytest.param(
@@ -254,6 +258,7 @@ CASES = [
         ("RV2", "RV6"),
         [_part("RV2", "NEW", True)],
         "yes",
+        "OLD",
         id="reused-partial",
     ),
     pytest.param(
@@ -261,24 +266,34 @@ CASES = [
         ("RV2", "RV6"),
         [_part("RV2", "NEW", False), _part("RV6", "SECONDARY", False)],
         "yes",
+        "OLD",
         id="reused-included",
     ),
 ]
 
 
 @pytest.mark.parametrize("version", [6, 7, 8], ids=["kicad6", "kicad7", "kicad8"])
-@pytest.mark.parametrize(("initial_bom", "refs", "parts", "expected_bom"), CASES)
-def test_export_syncs_bom_without_changing_lcsc_resolution(
-    tmp_path, monkeypatch, version, initial_bom, refs, parts, expected_bom
+@pytest.mark.parametrize(
+    ("initial_bom", "refs", "parts", "expected_bom", "expected_lcsc"), CASES
+)
+def test_export_syncs_bom_and_resolves_lcsc_across_formats(
+    tmp_path,
+    monkeypatch,
+    version,
+    initial_bom,
+    refs,
+    parts,
+    expected_bom,
+    expected_lcsc,
 ):
-    """BOM sync handles each format while LCSC still follows the top reference."""
+    """BOM and LCSC sync handle standalone and reused symbols independently."""
     parts = [*parts, _part("RV99", "FOREIGN", False)]
     result = _run_export(tmp_path, monkeypatch, version, initial_bom, refs, parts)
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == [
         expected_bom
     ]
-    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["NEW"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == [expected_lcsc]
     if version in {6, 7}:
         assert f"(in_bom {expected_bom}) (on_board yes)" in result
 
@@ -324,11 +339,11 @@ def test_export_resolves_instances_in_empty_project(
 
 
 @pytest.mark.parametrize("version", [6, 7, 8], ids=["kicad6", "kicad7", "kicad8"])
-def test_export_ignores_foreign_top_reference_for_bom(tmp_path, monkeypatch, version):
-    """BOM state follows active instances while LCSC follows the top reference."""
+def test_export_ignores_foreign_top_reference(tmp_path, monkeypatch, version):
+    """BOM and LCSC state follow active instances, not a stale top reference."""
     parts = [
         _part("RV2", "ACTIVE", True),
-        _part("RV6", "SECONDARY", True),
+        _part("RV6", "ACTIVE", True),
         _part("RV99", "TOP", False),
     ]
     result = _run_export(
@@ -342,7 +357,7 @@ def test_export_ignores_foreign_top_reference_for_bom(tmp_path, monkeypatch, ver
     )
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["no"]
-    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["TOP"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["ACTIVE"]
 
 
 def test_kicad6_ignores_selected_instance_tables(tmp_path, monkeypatch):
@@ -351,11 +366,21 @@ def test_kicad6_ignores_selected_instance_tables(tmp_path, monkeypatch):
     child.write_text(_schematic(6, "yes", ("RV2", "RV6")), encoding="utf-8")
     selected_root = tmp_path / "alternate-root.kicad_sch"
     selected_root.write_text(_v6_root(("RV2", "RV6")), encoding="utf-8")
-    parts = [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", True)]
+    parts = [_part("RV2", "NEW", True), _part("RV6", "NEW", True)]
 
     assert not (tmp_path / "board.kicad_sch").exists()
     _load_schematic(tmp_path, monkeypatch, 6, [child, selected_root], parts)
     result = child.read_text(encoding="utf-8")
+
+    assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["OLD"]
+
+
+@pytest.mark.parametrize("version", [6, 7, 8], ids=["kicad6", "kicad7", "kicad8"])
+def test_export_updates_lcsc_when_bom_states_disagree(tmp_path, monkeypatch, version):
+    """A BOM disagreement does not suppress an agreed LCSC update."""
+    parts = [_part("RV2", "NEW", True), _part("RV6", "NEW", False)]
+    result = _run_export(tmp_path, monkeypatch, version, "yes", ("RV2", "RV6"), parts)
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
     assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["NEW"]
@@ -384,7 +409,7 @@ def test_export_skips_unresolved_instances(
     """Unresolved instance data must not fall back to the top reference."""
     parts = [
         _part("RV2", "NEW", True),
-        _part("RV6", "SECONDARY", True),
+        _part("RV6", "NEW", True),
         _part("RV99", "FOREIGN", True),
     ]
     result = _run_export(
@@ -398,6 +423,43 @@ def test_export_skips_unresolved_instances(
     )
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["OLD"]
+
+
+def test_unresolved_lcsc_does_not_reuse_previous_symbol(tmp_path, monkeypatch):
+    """An unresolved symbol does not inherit the previous LCSC candidate."""
+    first = _symbol(8, "yes", ("RV2",)).replace('    (pin "1" (uuid "pin-uuid"))\n', "")
+    second = _symbol(
+        8,
+        "yes",
+        ("RV3", "RV4"),
+        reference="RV3",
+        symbol_uuid="symbol-uuid-2",
+        instance_text=_instance_block(("RV3", "RV4"), include_foreign=False),
+    )
+    path = tmp_path / "two-symbols.kicad_sch"
+    path.write_text(
+        f"""(kicad_sch
+  (lib_symbols)
+{first}
+{second}
+)
+""",
+        encoding="utf-8",
+    )
+    parts = [
+        _part("RV2", "FIRST", False),
+        _part("RV3", "SECOND", False),
+        _part("RV4", "OTHER", False),
+    ]
+
+    _load_schematic(tmp_path, monkeypatch, 8, [path], parts)
+    result = path.read_text(encoding="utf-8")
+
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == [
+        "FIRST",
+        "OLD",
+    ]
 
 
 def test_export_keeps_symbol_resolution_independent(tmp_path, monkeypatch):
