@@ -1,4 +1,4 @@
-"""Tests for syncing schematic in_bom state from PCB parts."""
+"""Tests for syncing schematic BOM state and LCSC values from PCB parts."""
 
 from collections.abc import Sequence
 import importlib.util
@@ -313,12 +313,15 @@ def _run_export(
 
 
 CASES = [
-    pytest.param("yes", ("RV2",), [_part("RV2", "NEW", True)], "no", id="single"),
+    pytest.param(
+        "yes", ("RV2",), [_part("RV2", "NEW", True)], "no", "NEW", id="single"
+    ),
     pytest.param(
         "yes",
         ("RV2", "RV6"),
         [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", True)],
         "no",
+        "OLD",
         id="reused-agree",
     ),
     pytest.param(
@@ -326,6 +329,7 @@ CASES = [
         ("RV2", "RV6"),
         [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", False)],
         "yes",
+        "OLD",
         id="reused-disagree",
     ),
     pytest.param(
@@ -333,6 +337,7 @@ CASES = [
         ("RV2", "RV6"),
         [_part("RV2", "NEW", True)],
         "yes",
+        "OLD",
         id="reused-partial",
     ),
     pytest.param(
@@ -340,7 +345,32 @@ CASES = [
         ("RV2", "RV6"),
         [_part("RV2", "NEW", False), _part("RV6", "SECONDARY", False)],
         "yes",
+        "OLD",
         id="reused-included",
+    ),
+    pytest.param(
+        "yes",
+        ("RV2", "RV6"),
+        [_part("RV2", "NEW", True), _part("RV6", "NEW", True)],
+        "no",
+        "NEW",
+        id="reused-lcsc-agree",
+    ),
+    pytest.param(
+        "yes",
+        ("RV2", "RV6"),
+        [_part("RV2", "", True), _part("RV6", "", True)],
+        "no",
+        "OLD",
+        id="reused-lcsc-empty",
+    ),
+    pytest.param(
+        "yes",
+        ("RV2", "RV6"),
+        [_part("RV2", "NEW", True), _part("RV6", "", True)],
+        "no",
+        "OLD",
+        id="reused-lcsc-partially-empty",
     ),
 ]
 
@@ -350,8 +380,10 @@ CASES = [
     [6, 7, 8],
     ids=["kicad6", "kicad7", "kicad8+"],
 )
-@pytest.mark.parametrize(("initial_bom", "refs", "parts", "expected_bom"), CASES)
-def test_export_syncs_bom_without_changing_lcsc_resolution(
+@pytest.mark.parametrize(
+    ("initial_bom", "refs", "parts", "expected_bom", "expected_lcsc"), CASES
+)
+def test_export_syncs_bom_and_resolves_lcsc_across_formats(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     version: int,
@@ -359,15 +391,16 @@ def test_export_syncs_bom_without_changing_lcsc_resolution(
     refs: Sequence[str],
     parts: list[dict[str, object]],
     expected_bom: str,
+    expected_lcsc: str,
 ) -> None:
-    """BOM sync handles each format while LCSC still follows the top reference."""
+    """BOM and LCSC sync handle standalone and reused symbols independently."""
     parts = [*parts, _part("RV99", "FOREIGN", False)]
     result = _run_export(tmp_path, monkeypatch, version, initial_bom, refs, parts)
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == [
         expected_bom
     ]
-    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["NEW"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == [expected_lcsc]
     if version in {6, 7}:
         assert f"(in_bom {expected_bom}) (on_board yes)" in result
 
@@ -426,7 +459,7 @@ def test_export_resolves_instances_in_empty_project(
     """An empty project name resolves every instance in its sole group."""
     parts = [
         _part("RV2", "NEW", True),
-        _part("RV6", "SECONDARY", secondary_excluded),
+        _part("RV6", "NEW", secondary_excluded),
     ]
     result = _run_export(
         tmp_path,
@@ -442,6 +475,7 @@ def test_export_resolves_instances_in_empty_project(
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == [
         expected_bom
     ]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["NEW"]
 
 
 @pytest.mark.parametrize(
@@ -449,13 +483,13 @@ def test_export_resolves_instances_in_empty_project(
     [6, 7, 8],
     ids=["kicad6", "kicad7", "kicad8+"],
 )
-def test_export_ignores_foreign_top_reference_for_bom(
+def test_export_ignores_foreign_top_reference(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int
 ) -> None:
-    """BOM state follows active instances while LCSC follows the top reference."""
+    """BOM and LCSC state follow active instances, not a stale top reference."""
     parts = [
         _part("RV2", "ACTIVE", True),
-        _part("RV6", "SECONDARY", True),
+        _part("RV6", "ACTIVE", True),
         _part("RV99", "TOP", False),
     ]
     result = _run_export(
@@ -469,11 +503,14 @@ def test_export_ignores_foreign_top_reference_for_bom(
     )
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["no"]
-    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["TOP"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["ACTIVE"]
 
 
+@pytest.mark.parametrize("project_api_available", [False, True])
 def test_kicad6_ignores_selected_instance_tables(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    project_api_available: bool,
 ) -> None:
     """A selected file is not assumed to be the active project's root."""
     child = tmp_path / "child.kicad_sch"
@@ -481,14 +518,30 @@ def test_kicad6_ignores_selected_instance_tables(
     selected_root = tmp_path / "alternate-root.kicad_sch"
     selected_root.write_text(_v6_root(("RV2", "RV6")), encoding="utf-8")
     (tmp_path / "alternate-root.kicad_pro").write_text("{}", encoding="utf-8")
-    parts = [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", True)]
-    pcbnew = _project_api(None, {"alternate-root.kicad_pro": None})
+    parts = [_part("RV2", "NEW", True), _part("RV6", "NEW", True)]
+    pcbnew = (
+        _project_api(None, {"alternate-root.kicad_pro": None})
+        if project_api_available
+        else None
+    )
 
     assert not (tmp_path / "board.kicad_sch").exists()
     _load_schematic(
         tmp_path, monkeypatch, 6, [child, selected_root], parts, pcbnew=pcbnew
     )
     result = child.read_text(encoding="utf-8")
+
+    assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["OLD"]
+
+
+@pytest.mark.parametrize("version", [6, 7, 8], ids=["kicad6", "kicad7", "kicad8+"])
+def test_export_updates_lcsc_when_bom_states_disagree(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, version: int
+) -> None:
+    """A BOM disagreement does not suppress an agreed LCSC update."""
+    parts = [_part("RV2", "NEW", True), _part("RV6", "NEW", False)]
+    result = _run_export(tmp_path, monkeypatch, version, "yes", ("RV2", "RV6"), parts)
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
     assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["NEW"]
@@ -527,7 +580,7 @@ def test_export_skips_unresolved_instances(
     """Unresolved instance data must not fall back to the top reference."""
     parts = [
         _part("RV2", "NEW", True),
-        _part("RV6", "SECONDARY", True),
+        _part("RV6", "NEW", True),
         _part("RV99", "FOREIGN", True),
     ]
     (tmp_path / "foreign.kicad_pro").write_text("{}", encoding="utf-8")
@@ -544,7 +597,45 @@ def test_export_skips_unresolved_instances(
     )
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
-    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["NEW"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["OLD"]
+
+
+def test_unresolved_lcsc_does_not_reuse_previous_symbol(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An unresolved symbol does not inherit the previous LCSC candidate."""
+    first = _symbol(8, "yes", ("RV2",)).replace('    (pin "1" (uuid "pin-uuid"))\n', "")
+    second = _symbol(
+        8,
+        "yes",
+        ("RV3", "RV4"),
+        reference="RV3",
+        symbol_uuid="symbol-uuid-2",
+        instance_text=_instance_block(("RV3", "RV4"), include_foreign=False),
+    )
+    path = tmp_path / "two-symbols.kicad_sch"
+    path.write_text(
+        f"""(kicad_sch
+  (lib_symbols)
+{first}
+{second}
+)
+""",
+        encoding="utf-8",
+    )
+    parts = [
+        _part("RV2", "FIRST", False),
+        _part("RV3", "SECOND", False),
+        _part("RV4", "OTHER", False),
+    ]
+
+    _load_schematic(tmp_path, monkeypatch, 8, [path], parts)
+    result = path.read_text(encoding="utf-8")
+
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == [
+        "FIRST",
+        "OLD",
+    ]
 
 
 def test_export_warns_for_stale_project_instances(
@@ -612,6 +703,10 @@ def test_export_keeps_symbol_resolution_independent(
         "no",
         "yes",
     ]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == [
+        "OLD",
+        "SECOND",
+    ]
 
 
 @pytest.mark.parametrize(
@@ -636,7 +731,7 @@ def test_export_uses_loaded_project_for_renamed_board(
     )
     parts = [
         _part("RV2", "NEW", True),
-        _part("RV6", "SECONDARY", True),
+        _part("RV6", "NEW", True),
         _part("RV99", "FOREIGN", False),
     ]
 
@@ -678,13 +773,14 @@ def test_export_skips_ambiguous_board_project(
         version,
         "yes",
         ("RV2", "RV6"),
-        [_part("RV2", "NEW", True), _part("RV6", "SECONDARY", True)],
+        [_part("RV2", "NEW", True), _part("RV6", "NEW", True)],
         project_name="renamed_board",
         board_name="renamed_board.kicad_pcb",
         pcbnew=_ambiguous_project_api(tmp_path, match_count),
     )
 
     assert re.findall(r"^\s*\(in_bom\s+(yes|no)\)", result, re.MULTILINE) == ["yes"]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == ["OLD"]
     reason = (
         "open board has no project identity"
         if match_count is None
@@ -740,7 +836,7 @@ def test_export_still_syncs_unscoped_symbol_when_project_is_ambiguous(
     )
     parts = [
         _part("RV2", "FIRST", True),
-        _part("RV6", "SECONDARY", True),
+        _part("RV6", "FIRST", True),
         _part("RV3", "STANDALONE", True),
     ]
 
@@ -759,11 +855,18 @@ def test_export_still_syncs_unscoped_symbol_when_project_is_ambiguous(
         "yes",
         "no",
     ]
+    assert re.findall(r'\(property\s+"LCSC"\s+"([^"]*)"', result) == [
+        "OLD",
+        "STANDALONE",
+    ]
     assert re.findall(
         r"^\s*\(in_bom\s+(yes|no)\)",
         second_path.read_text(encoding="utf-8"),
         re.MULTILINE,
     ) == ["yes"]
+    assert re.findall(
+        r'\(property\s+"LCSC"\s+"([^"]*)"', second_path.read_text(encoding="utf-8")
+    ) == ["OLD"]
     reason = (
         "open board has no project identity"
         if match_count is None
