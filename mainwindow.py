@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 # pyright: reportMissingImports=false, reportMissingModuleSource=false
-# ruff: noqa: I001
+# ruff: noqa: I001, UP045
 
 from collections.abc import Iterable, Sequence
 from contextlib import contextmanager, suppress
@@ -1776,8 +1776,8 @@ class JLCPCBTools(wx.Dialog):
             # cause pcbnew to refresh the board with the changes to the selected footprint(s)
             self.pcbnew.Refresh()
 
-    def enable_part_specific_toolbar_buttons(self, state):
-        """Control the state of all the buttons that relate to parts in toolbar on the right side."""
+    def enable_part_specific_toolbar_buttons(self, state: bool) -> None:
+        """Enable toolbar actions that operate on selected footprints."""
         for button in (
             ID_SELECT_PART,
             ID_REMOVE_LCSC_NUMBER,
@@ -1785,8 +1785,6 @@ class JLCPCBTools(wx.Dialog):
             ID_TOGGLE_BOM,
             ID_TOGGLE_POS,
             ID_PART_DETAILS,
-            ID_HIDE_BOM,
-            ID_HIDE_POS,
         ):
             self.right_toolbar.EnableTool(button, state)
 
