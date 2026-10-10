@@ -236,7 +236,8 @@ def test_window_cache_reads_each_code_once_and_keeps_the_manufacturer(
         ["BAV99", "D1", "SOT-23", "C2500", "1", "Nexperia", "BAV99,215"],
     ]
     assert library.get_part_details.call_args_list == [call("C25804"), call("C2500")]
-    assert window._catalog_details["C25804"]["manufacturer"] == uniroyal[0]
+    assert window._catalog_get_part_details("C25804")["manufacturer"] == uniroyal[0]
+    assert library.get_part_details.call_count == 2
 
 
 def test_each_part_is_looked_up_once_in_canonical_form(
