@@ -447,6 +447,36 @@ def test_row_that_cannot_fit_the_columns_keeps_them_blank_and_warns(
     assert "Manufacturer and MPN left blank for R1" in caplog.text
 
 
+@pytest.mark.parametrize("catalog", ["hit", "missing", "unavailable"])
+@pytest.mark.parametrize("length", [2028, 2029])
+def test_row_that_only_overflows_with_blank_cells_keeps_the_five_column_bom(
+    bom_factory: BomFactory,
+    caplog: pytest.LogCaptureFixture,
+    length: int,
+    catalog: str,
+) -> None:
+    """Blank cells still cost two commas, so a row at the limit keeps the original BOM.
+
+    The comment puts the five-column row at 2047 or 2048 bytes, and one
+    reference cannot be split. The whole export falls back to the setting-off
+    columns, whatever the catalog holds for the part.
+    """
+    groups = [
+        _group("Z" * length, "R1", "C40404" if catalog == "missing" else "C25804"),
+        _group("BAV99", "D1", "C2500", "SOT-23"),
+    ]
+    original = _written(bom_factory(groups, enabled=False))
+    fab = bom_factory(groups, available=catalog != "unavailable")
+
+    with caplog.at_level(logging.WARNING):
+        rows = _written(fab)
+
+    assert rows == original
+    assert len(rows[0]) == 5
+    assert _longest_line(fab) == length + len(",R1,R_0603,C25804,1") <= 2048
+    assert "BOM written without Manufacturer and MPN columns" in caplog.text
+
+
 def test_row_too_long_without_the_columns_is_written_unchanged_and_warns(
     bom_factory: BomFactory, caplog: pytest.LogCaptureFixture
 ) -> None:

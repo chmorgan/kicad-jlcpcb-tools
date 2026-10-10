@@ -1146,8 +1146,10 @@ class Fabrication:
         if self.parent.settings.get("gerber", {}).get(
             "bom_manufacturer_columns", False
         ):
-            header += ["Manufacturer", "MPN"]
-            rows = self._add_manufacturer_columns(rows)
+            enriched = self._add_manufacturer_columns(rows)
+            if enriched is not None:
+                header += ["Manufacturer", "MPN"]
+                rows = enriched
         self.validate_generation()
         bom_path = self.get_staged_artifact_paths()["bom_csv"]
         with open(bom_path, "w", newline="", encoding="utf-8") as csvfile:
@@ -1158,15 +1160,17 @@ class Fabrication:
 
     def _add_manufacturer_columns(
         self, rows: tuple[tuple[Any, ...], ...]
-    ) -> tuple[tuple[Any, ...], ...]:
+    ) -> Optional[tuple[tuple[Any, ...], ...]]:  # noqa: UP045
         """Append catalog Manufacturer and MPN cells, re-splitting rows JLC would reject.
 
         A row whose other cells leave no room for even one reference beside its
-        manufacturer and MPN keeps those two cells blank instead. A row whose
-        comment, footprint and LCSC cells alone overflow is written as the
-        setting-off export writes it, plus the blank cells: splitting
-        designators cannot shorten those. Either case is logged, because the
-        columns never block output.
+        manufacturer and MPN keeps those two cells blank instead. Even blank,
+        the two cells cost two commas: a row that fits only without them gives
+        None, so the whole BOM keeps the setting-off columns rather than lose
+        a row JLC accepts. A row whose comment, footprint and LCSC cells
+        overflow even without them is written as the setting-off export writes
+        it, plus the blank cells: splitting designators cannot shorten those.
+        Each case is logged, because the columns never block output.
         """
         columns = self._manufacturer_columns(row[3] for row in rows)
         result = []
@@ -1182,6 +1186,15 @@ class Fabrication:
                         row[1],
                         _BOM_ROW_MAX_LEN,
                     )
+                elif _bom_line_bytes(row) <= _BOM_ROW_MAX_LEN:
+                    self.logger.warning(
+                        "The BOM row for %s fits JLC's %d-byte limit only without "
+                        "Manufacturer and MPN cells; BOM written without "
+                        "Manufacturer and MPN columns",
+                        row[1],
+                        _BOM_ROW_MAX_LEN,
+                    )
+                    return None
                 else:
                     self.logger.warning(
                         "The BOM row for %s exceeds JLC's %d-byte limit even "
