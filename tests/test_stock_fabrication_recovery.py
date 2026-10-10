@@ -243,7 +243,7 @@ def generation_window(
             window.run_drc_before_gerber_export = MagicMock(return_value=False)
             window._part_selector = None
             window._catalog_ready = False
-            window._catalog_details = {}
+            window._invalidate_catalog_details()
             window._part_preferences_applied_on_open = True
             window.library = None
             window.init_data()

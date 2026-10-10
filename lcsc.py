@@ -12,9 +12,10 @@ sqlite, wx or a CSV writer, which render ``None`` as ``""`` and never as
 ``str(None)``.
 """
 
+from collections.abc import Iterable, Iterator, Mapping, MutableMapping
 from dataclasses import dataclass
 import re
-from typing import Optional
+from typing import Optional, TypeVar, Union
 
 # A C and a run of decimal digits from any script, so a number is always read
 # whole: "C123４" is one malformed token, never C123 with something after it.
@@ -169,3 +170,56 @@ class Lcsc:
     def __str__(self) -> str:
         """Render as the bare canonical part number."""
         return self.value
+
+
+_V = TypeVar("_V")
+
+
+class LcscDict(MutableMapping[Lcsc, _V]):
+    """A dict keyed by parts, which refuses any key that is not an :class:`Lcsc`.
+
+    An ``Lcsc`` never equals a ``str``, so a string key in a part-keyed dict
+    fails silently: written and never read, or asked for and never found.
+    Here it raises ``TypeError`` at the line that uses it, on every read and
+    write path, so the mistake shows up as itself rather than as a missing
+    value somewhere downstream. Parse the key with :meth:`Lcsc.parse` first.
+    """
+
+    def __init__(
+        self, entries: Union[Mapping[Lcsc, _V], Iterable[tuple[Lcsc, _V]]] = ()
+    ) -> None:
+        self._entries: dict[Lcsc, _V] = {}
+        self.update(entries)
+
+    @staticmethod
+    def _part(key: object) -> Lcsc:
+        if not isinstance(key, Lcsc):
+            raise TypeError(
+                f"keys are Lcsc parts, not {type(key).__name__} {key!r}; "
+                "parse it with Lcsc.parse"
+            )
+        return key
+
+    def __getitem__(self, key: object) -> _V:
+        """Return the value stored for this part."""
+        return self._entries[self._part(key)]
+
+    def __setitem__(self, key: object, value: _V) -> None:
+        """Store a value for this part."""
+        self._entries[self._part(key)] = value
+
+    def __delitem__(self, key: object) -> None:
+        """Forget this part."""
+        del self._entries[self._part(key)]
+
+    def __iter__(self) -> Iterator[Lcsc]:
+        """Iterate over the parts, in insertion order."""
+        return iter(self._entries)
+
+    def __len__(self) -> int:
+        """Count the parts."""
+        return len(self._entries)
+
+    def __repr__(self) -> str:
+        """Show the entries."""
+        return f"LcscDict({self._entries!r})"

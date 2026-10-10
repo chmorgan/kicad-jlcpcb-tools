@@ -104,7 +104,7 @@ from .helpers import (
     loadBitmapScaled,
 )
 from .kicad_drc import DRCViolationCounter
-from .lcsc import Lcsc, extract_lcsc
+from .lcsc import Lcsc, LcscDict, extract_lcsc
 from .lcsc_entry_dialog import LcscEntryDialog
 from .library import CorrectionState, Library, LibraryState
 from .partdetails import PartDetailsDialog
@@ -197,7 +197,7 @@ class JLCPCBTools(wx.Frame):
         board_action: Optional[Callable[[Callable[[], None]], None]] = None,
     ) -> None:
         self.library: Optional[Library] = None
-        self._catalog_details: dict[Lcsc, dict[str, Any]] = {}
+        self._catalog_details: LcscDict[dict[str, Any]] = LcscDict()
         self._catalog_ready = False
         self._catalog_switch_pending = False
         self.store: Optional[Store] = None
@@ -990,7 +990,9 @@ class JLCPCBTools(wx.Frame):
 
     def _invalidate_catalog_details(self) -> None:
         """Start a fresh raw-details snapshot for the current catalog."""
-        self._catalog_details = {}
+        # Part-keyed and strict, so a string key fails where it is used
+        # rather than being written and never read.
+        self._catalog_details = LcscDict()
 
     def _catalog_get_part_details(
         self, lcsc: Union[Lcsc, str], *, strict: bool = False
