@@ -116,7 +116,7 @@ def configuration_window(
             window.init_fabrication = MagicMock()
             window._part_selector = None
             window._catalog_ready = False
-            window._catalog_details = {}
+            window._invalidate_catalog_details()
             window._part_preferences_applied_on_open = True
             window.library = None
             if seed:
@@ -523,6 +523,8 @@ def test_real_constructor_scopes_cache_and_readiness_to_initialized_library(
         provider.get_pcbnew().GetBoard.return_value = board
         window = module.JLCPCBTools(None, provider)
         assert window._catalog_details == {}
+        with pytest.raises(TypeError, match="Lcsc"):
+            window._catalog_details["C1"] = {}
         assert window.is_catalog_available() is ready
         assert window.bom_estimator_board_count == 100
         assert window.bom_estimator_show is False

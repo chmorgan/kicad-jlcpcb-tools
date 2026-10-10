@@ -714,3 +714,16 @@ def test_two_spellings_of_one_part_share_one_lookup_and_persist_canonically(
     assert [fp.field.text for fp in board.GetFootprints()] == ["C200", "C200"]
     reopened = mainwindow.Store(window, window.project_path, board)
     assert [reopened.get_part(ref)["lcsc"] for ref in ("R1", "R2")] == ["C200", "C200"]
+
+
+def test_the_catalog_cache_refuses_a_key_that_is_not_a_part(
+    make_window: Callable[..., Any],
+) -> None:
+    """A string key would be written and never read, so it fails where it is made."""
+    window = make_window()
+    window._invalidate_catalog_details()
+
+    with pytest.raises(TypeError, match="Lcsc"):
+        window._catalog_details["C200"] = {}
+    with pytest.raises(TypeError, match="Lcsc"):
+        _ = "C200" in window._catalog_details

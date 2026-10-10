@@ -19,6 +19,7 @@ _spec.loader.exec_module(_lcsc)
 
 is_lcsc_part = _lcsc.is_lcsc_part
 Lcsc = _lcsc.Lcsc
+LcscDict = _lcsc.LcscDict
 
 
 class TestLcscConstruction:
@@ -127,3 +128,50 @@ class TestAbsence:
         assert Lcsc.parse(None) is None
         with pytest.raises(ValueError):
             Lcsc("")
+
+
+class TestLcscDict:
+    """A part-keyed dict refuses every key that is not a part.
+
+    An Lcsc never equals a str, so a string key in a part-keyed dict fails
+    silently: written and never read, or asked for and never found.
+    """
+
+    def test_it_finds_a_value_under_any_spelling_of_its_part(self):
+        """Keys are parts, so equivalent spellings reach one entry."""
+        parts = LcscDict()
+        parts[Lcsc("C12345")] = "resistor"
+
+        assert parts[Lcsc(" c12345 ")] == "resistor"
+        assert Lcsc("c12345") in parts
+        assert Lcsc("C1") not in parts
+        assert list(parts) == [Lcsc("C12345")]
+        assert len(parts) == 1
+
+    @pytest.mark.parametrize(
+        "use",
+        [
+            pytest.param(lambda d: d.__setitem__("C12345", 1), id="set"),
+            pytest.param(lambda d: d["C12345"], id="get"),
+            pytest.param(lambda d: "C12345" in d, id="contains"),
+            pytest.param(lambda d: d.get("C12345"), id="get-default"),
+            pytest.param(lambda d: d.pop("C12345", None), id="pop"),
+            pytest.param(lambda d: d.setdefault("C12345", 1), id="setdefault"),
+            pytest.param(lambda d: d.__delitem__("C12345"), id="delete"),
+            pytest.param(lambda d: d.update({"C12345": 1}), id="update"),
+            pytest.param(lambda d: LcscDict({"C12345": 1}), id="construct"),
+        ],
+    )
+    def test_it_refuses_a_string_key_however_it_is_used(self, use):
+        """Every read and write path raises rather than silently missing."""
+        parts = LcscDict({Lcsc("C12345"): 0})
+
+        with pytest.raises(TypeError, match="Lcsc"):
+            use(parts)
+        assert dict(parts) == {Lcsc("C12345"): 0}
+
+    def test_it_equals_a_dict_holding_the_same_entries(self):
+        """Comparison is by content, so an empty cache still equals {}."""
+        assert LcscDict() == {}
+        assert LcscDict({Lcsc("C1"): 1}) == {Lcsc("C1"): 1}
+        assert LcscDict({Lcsc("C1"): 1}) != {Lcsc("C1"): 2}
