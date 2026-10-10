@@ -684,6 +684,10 @@ class SettingsDialog(wx.Dialog):
         self._add_setting_row(
             settings_grid, None, self.bom_manufacturer_columns_setting
         )
+        # An empty icon and control cell end the row, so the BOM settings sit
+        # together and every later setting keeps its pair.
+        settings_grid.AddSpacer(0)
+        settings_grid.AddSpacer(0)
         self._add_setting_row(settings_grid, None, self.highlight_matches_setting)
         self._add_setting_row(settings_grid, None, self.simplify_stock_setting)
         self._add_setting_row(settings_grid, None, self.stock_concern_setting)
